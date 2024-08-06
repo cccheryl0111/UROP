@@ -11,13 +11,11 @@ class Sampler:
     def __init__(self, y, X, S=10000):
         # Set values of the random variables and initial values of parameters
         self.y = y
-        self.X = (X - X.mean()) / X.std()  # centering and scaling
-        self.X['intercept'] = 1
-        self.X = self.X.values
+        self.X = X
         self.S = S
         # Our purpose is to interate to get the values of z and \beta
-        self.z = np.zeros(X.shape[1])
-        self.beta = np.ones(X.shape[1])
+        self.z = np.ones(X.shape[1])
+        self.beta = np.zeros(X.shape[1])
 
         # Store samples
         self.z_samples = np.zeros((self.S, self.X.shape[1]))
@@ -34,7 +32,8 @@ class GibbsSampler(Sampler):
     Parameters
     ----------
     y : numpy array with the result in the values of 1s and 0s.
-    X : panda DataFrame with the potential variables affecting the values of y.
+    X : numpy array with the potential variables affecting the values of y
+        and a intercept column, it should be centred and scaled.
     g : the parameter in g-prior
     nu0, sigma01 : the parameters in the distribution of sigma^2
 
@@ -56,21 +55,20 @@ class GibbsSampler(Sampler):
         self.g = g
         self.nu0 = nu0
         self.sigma02 = sigma02
-        self.Hg = None
 
     def lp_y_X(self):
         n = self.X.shape[0]
         p = self.X.shape[1]
 
         if p == 0:
-            self.Hg = 0
+            Hg = 0
             s20 = np.mean(self.y ** 2)
         else:
-            self.Hg = self.X @ np.linalg.inv(self.X.T @ self.X) @ self.X.T
+            Hg = self.X @ np.linalg.inv(self.X.T @ self.X) @ self.X.T
             s20 = sm.OLS(self.y, self.X).fit().mse_resid
 
         SSRg = self.y.T @ (np.identity(n)
-                           - (self.g/(self.g+1)) * self.Hg) @ self.y
+                           - (self.g/(self.g+1)) * Hg) @ self.y
 
         log_prob = -0.5 * (n * np.log(np.pi) + p * np.log(1 + self.g)
                            + (self.nu0 + n) * np.log(self.nu0 * s20 + SSRg)
@@ -79,15 +77,17 @@ class GibbsSampler(Sampler):
         return log_prob
 
     def run_sampler(self):
-        used = GibbsSampler(self.y, self.X[:, self.z == 1])
+        used = GibbsSampler(self.y, self.X[:, self.z == 1],
+                            self.g, self.nu0, self.sigma02)
         lp_y_c = used.lp_y_X()
         for s in range(self.S):
             # update z
-            for j in np.random.permutation(self.X.shape[1]):
+            for j in np.random.permutation(range(1, self.X.shape[1])):
                 zp = self.z.copy()
                 zp[j] = 1 - zp[j]
-
-                lp_y_p = self.lp_y_X(self.y, self.X[:, zp == 1])
+                used_p = GibbsSampler(self.y, self.X[:, zp == 1],
+                                      self.g, self.nu0, self.sigma02)
+                lp_y_p = used_p.lp_y_X()
 
                 r = (lp_y_p - lp_y_c) * ((-1) ** (zp[j] == 0))
                 self.z[j] = np.random.binomial(1, 1 / (1 + np.exp(-r)))
@@ -98,9 +98,9 @@ class GibbsSampler(Sampler):
             self.z_samples[s, :] = self.z
 
             # Update sigma(???)
-            X_z = self.X[self.z == 1]
-            y_z = self.y[self.z == 1]
-            Hg_z = self.Hg[self.z == 1]
+            X_z = self.X[:, self.z == 1]
+            y_z = self.y
+            Hg_z = X_z @ np.linalg.inv(X_z.T @ X_z) @ X_z.T
             SSRg_z = y_z.T @ (np.identity(len(X_z))
                               - (self.g/(self.g+1)) * Hg_z) @ y_z
             shape = (self.nu0 + len(X_z)) / 2
@@ -108,10 +108,12 @@ class GibbsSampler(Sampler):
             gamma2 = 1 / stats.gamma.rvs(a=shape, scale=scale, size=1)
 
             # Update beta
-            cor = self.g * gamma2 * np.linalg(X_z.T @ X_z)
+            cor = self.g * gamma2 * np.linalg.inv(X_z.T @ X_z)
             self.beta[self.z == 1] = np.random.multivariate_normal(
-                np.zeros(self.X.shape[1]), cor)
+                np.zeros(X_z.shape[1]), cor)
             self.beta_samples[s] = self.beta
+
+        return self.beta_samples, self.z_samples
 
 
 class MetropolisHastingsSampler(Sampler):
@@ -121,7 +123,8 @@ class MetropolisHastingsSampler(Sampler):
     Parameters
     ----------
     y: numpy array with the result in the values of 1s and 0s.
-    X: panda DataFrame with the potential variables affecting the values of y.
+    X: numpy array with the potential variables affecting the values of y
+       and a intercept column, it should be centred and scaled.
     likelihood: The likelihood of y used in computing conditional probability
     mean_beta, cov_beta: the parameters in the conditional distribution of beta
 
@@ -144,6 +147,8 @@ class MetropolisHastingsSampler(Sampler):
         self.cov_beta = cov_beta
 
     def run_sampler(self):
+        p_beta = multivariate_normal.pdf(self.beta, self.mean_beta,
+                                         self.cov_beta)
         var_prop = np.var(np.log(self.y+1/2)) * np.linalg.inv(
             self.X.T @ self.X)
         for i in range(self.S):
@@ -169,11 +174,11 @@ class MetropolisHastingsSampler(Sampler):
                                            * self.X, axis=1))) ** (1-self.y)))
 
             r_log_beta = L_prop_beta + np.log(p_prop_beta) - L_beta
-            - np.log(self.p_beta) + np.log(J_beta) - np.log(J_prop_beta)
+            - np.log(p_beta) + np.log(J_beta) - np.log(J_prop_beta)
 
             if np.log(uniform()) < min(0, r_log_beta):
                 self.beta = beta_prop
-                self.p_beta = p_prop_beta
+                p_beta = p_prop_beta
 
             self.beta_samples[i] = self.beta
 
@@ -201,6 +206,8 @@ class MetropolisHastingsSampler(Sampler):
 
             self.z_samples[i] = self.z
 
+        return self.beta_samples, self.z_samples
+
 
 class PolyaGamma(Sampler):
     """
@@ -216,10 +223,11 @@ class PolyaGamma(Sampler):
     -------
     get the computed results by self.beta_samples and self.z_samples
     """
-    def __init__(self, y, X, mean_beta, cov_beta, S=10000):
+    def __init__(self, y, X, likelihood, mean_beta, cov_beta, S=10000):
         super().__init__(y, X, S)
         self.mean_beta = mean_beta
         self.cov_beta = cov_beta
+        self.likelihood = likelihood
         self.omega_samples = np.zeros((self.S, len(self.y)))
 
     def run_sampler(self):
@@ -266,3 +274,5 @@ class PolyaGamma(Sampler):
                     self.z = z_prop
 
             self.z_samples[i] = self.z
+
+        return self.beta_samples, self.z_samples

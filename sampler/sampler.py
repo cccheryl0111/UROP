@@ -1,6 +1,6 @@
 import numpy as np
 import scipy.stats as stats
-from scipy.stats import multivariate_normal
+from scipy.stats import norm, multivariate_normal
 from scipy.special import gammaln
 import statsmodels.api as sm
 from numpy.random import uniform
@@ -138,7 +138,7 @@ class MetropolisHastingsSampler(Sampler):
     the covariance mat of the proposal dist of beta can be approximated by
     sigma^2(X^{T} X)^{-1}, which is 'var_prop' in the run_sampler part.
     We also assume that beta and z are independent, with z_j ~ binary(1/2),
-    and beta ~ multivariate normal(mean_beta, cor_beta)
+    and beta_i ~ normal(mean_beta[i], cor_beta[i])
     """
     def __init__(self, y, X, likelihood, mean_beta, cov_beta, S=10000):
         super().__init__(y, X, S)
@@ -149,38 +149,39 @@ class MetropolisHastingsSampler(Sampler):
     def run_sampler(self):
         p_beta = multivariate_normal.pdf(self.beta, self.mean_beta,
                                          self.cov_beta)
-        var_prop = np.var(np.log(self.y+1/2)) * np.linalg.inv(
-            self.X.T @ self.X)
+
         for i in range(self.S):
-            # Sample beta
-            beta_prop = np.random.multivariate_normal(self.beta, var_prop)
-            J_prop_beta = multivariate_normal.pdf(beta_prop,
-                                                  self.beta, var_prop)
-            p_prop_beta = multivariate_normal.pdf(beta_prop, self.mean_beta,
-                                                  self.cov_beta)
-            J_beta = multivariate_normal.pdf(self.beta,
-                                             beta_prop, var_prop)
+            # Sample beta one by one
+            for j in range(self.X.shape[1]):
+                beta_prop_arr = self.beta.copy()
+                var_prop = np.var(np.log(self.y[j]+1/2))
+                beta_prop = np.random.normal(self.beta[j], var_prop)
+                beta_prop_arr[j] = beta_prop
 
-            L_prop_beta = sum(np.log(self.likelihood(
-                np.sum(beta_prop * self.z * self.X, axis=1)) ** self.y * (
-                    np.ones(len(self.y)) - self.likelihood(
-                        np.sum(beta_prop * self.z * self.X, axis=1)))
-                        ** (1-self.y)))
+                p_beta = norm.pdf(self.beta[j], self.mean_beta[j],
+                                  self.cov_beta[j])
+                J_prop_beta = norm.pdf(beta_prop, self.beta[j],
+                                       var_prop)
+                p_prop_beta = norm.pdf(beta_prop, self.mean_beta[j],
+                                       self.cov_beta[j])
+                J_beta = norm.pdf(self.beta[j], beta_prop, var_prop)
+                L_prop_beta = np.log(self.likelihood(
+                    sum(beta_prop_arr * self.z * self.X[j]))) ** self.y[j]
+                + np.log(1 - self.likelihood(
+                    sum(beta_prop_arr * self.z * self.X[j]))) * (1 - self.y[j])
 
-            L_beta = sum(np.log(self.likelihood(
-                np.sum(self.beta * self.z * self.X, axis=1)) ** self.y
-                                * (np.ones(len(self.y)) - self.likelihood(
-                                    np.sum(self.beta * self.z
-                                           * self.X, axis=1))) ** (1-self.y)))
+                L_beta = np.log(self.likelihood(
+                    sum(self.beta * self.z * self.X[j]))) * self.y[j]
+                + np.log(1 - self.likelihood(
+                    sum(self.beta * self.z * self.X[j]))) * (1 - self.y[j])
 
-            r_log_beta = L_prop_beta + np.log(p_prop_beta) - L_beta
-            - np.log(p_beta) + np.log(J_beta) - np.log(J_prop_beta)
+                r_log_beta = L_prop_beta + np.log(p_prop_beta) - L_beta
+                - np.log(p_beta) + np.log(J_beta) - np.log(J_prop_beta)
 
-            if np.log(uniform()) < min(0, r_log_beta):
-                self.beta = beta_prop
-                p_beta = p_prop_beta
+                if np.log(uniform()) < min(0, r_log_beta):
+                    self.beta = beta_prop_arr
 
-            self.beta_samples[i] = self.beta
+                self.beta_samples[i] = self.beta
 
             # Sample z
             for r in np.random.permutation(range(1, self.X.shape[1])):

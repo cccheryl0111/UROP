@@ -1,19 +1,21 @@
 import numpy as np
-from scipy.stats import uniform, gamma, norm
+from scipy.stats import gamma, norm
 from scipy.special import gammaln
 import statsmodels.api as sm
 from polyagamma import random_polyagamma
 
 
 class Sampler:
-    def __init__(self, y, X, S=10000):
+    def __init__(self, y, X, z, beta, mean_beta, cov_beta, S=10000):
         # Set values of the random variables and initial values of parameters
         self.y = y
         self.X = X
         self.S = S
-        # Our purpose is to interate to get the values of z and \beta
-        self.z = np.ones(X.shape[1])
-        self.beta = np.zeros(X.shape[1])
+        self.mean_beta = mean_beta
+        self.cov_beta = cov_beta
+
+        self.z = z
+        self.beta = beta
 
         # Store samples
         self.z_samples = np.zeros((self.S, self.X.shape[1]))
@@ -48,8 +50,9 @@ class GibbsSampler(Sampler):
     We also get from the assumption above the log likelihood of y used
     to compare whether to accept the proposed z.
     """
-    def __init__(self, y, X, g, nu0, sigma02, S=10000):
-        super().__init__(y, X, S)
+    def __init__(self, y, X, z, beta, mean_beta, cov_beta,
+                 g, nu0, sigma02, S=10000):
+        super().__init__(y, X, z, beta, mean_beta, cov_beta, S)
         self.g = g
         self.nu0 = nu0
         self.sigma02 = sigma02
@@ -138,16 +141,15 @@ class MetropolisHastingsSampler(Sampler):
     We also assume that beta and z are independent, with z_j ~ binary(1/2),
     and beta_i ~ normal(mean_beta[i], cor_beta[i])
     """
-    def __init__(self, y, X, likelihood, mean_beta, cov_beta, S=10000):
-        super().__init__(y, X, S)
+    def __init__(self, y, X, z, beta,
+                 mean_beta, cov_beta, likelihood, S=10000):
+
+        super().__init__(y, X, z, beta, mean_beta, cov_beta, S)
         self.likelihood = likelihood
-        self.mean_beta = mean_beta
-        self.cov_beta = cov_beta
 
     def run_sampler(self):
         for i in range(self.S):
             # Sample beta one by one
-
             delta = 40
             for j in range(self.X.shape[1]):
                 beta_prop_arr = self.beta.copy()
@@ -163,10 +165,13 @@ class MetropolisHastingsSampler(Sampler):
                                           self.cov_beta[j])
                 J_beta = np.log((self.beta[j] - (beta_prop
                                                  - delta)) / (2*delta))
+
                 L_prop_beta = np.log(self.likelihood(
-                    sum(beta_prop_arr * self.z * self.X[j]))) ** self.y[j]
+                    sum(beta_prop_arr * self.z * self.X[j]))) * self.y[j]
                 + np.log(1 - self.likelihood(
                     sum(beta_prop_arr * self.z * self.X[j]))) * (1 - self.y[j])
+
+                print(beta_prop_arr * self.z * self.X[j])
 
                 L_beta = np.log(self.likelihood(
                     sum(self.beta * self.z * self.X[j]))) * self.y[j]
@@ -179,7 +184,31 @@ class MetropolisHastingsSampler(Sampler):
                 if np.log(np.random.uniform()) < min(0, r_log_beta):
                     self.beta = beta_prop_arr
 
-                self.beta_samples[i] = self.beta
+            self.beta_samples[i] = self.beta
+
+            # Sample z
+            for r in np.random.permutation(range(1, self.X.shape[1])):
+                z_prop = self.z.copy()
+                z_prop[r] = 1 - z_prop[r]
+
+                L_prop_z = sum(np.log(self.likelihood(
+                    np.sum(self.beta * z_prop * self.X, axis=1)) ** self.y
+                    * (np.ones(len(self.y)) - self.likelihood(
+                        np.sum(self.beta * z_prop
+                               * self.X, axis=1))) ** (1 - self.y)))
+
+                L_z = sum(np.log(self.likelihood(
+                    np.sum(self.beta * self.z * self.X, axis=1)) ** self.y
+                    * (np.ones(len(self.y)) - self.likelihood(
+                        np.sum(self.beta * self.z
+                               * self.X, axis=1))) ** (1 - self.y)))
+
+                r_log_z = L_prop_z - L_z
+
+                if np.log(np.random.uniform()) < min(0, r_log_z):
+                    self.z = z_prop
+
+            self.z_samples[i] = self.z
 
         return self.beta_samples, self.z_samples
 
@@ -198,10 +227,9 @@ class PolyaGamma(Sampler):
     -------
     get the computed results by self.beta_samples and self.z_samples
     """
-    def __init__(self, y, X, likelihood, mean_beta, cov_beta, S=10000):
-        super().__init__(y, X, S)
-        self.mean_beta = mean_beta
-        self.cov_beta = cov_beta
+    def __init__(self, y, X, z, beta,
+                 mean_beta, cov_beta, likelihood, S=10000):
+        super().__init__(y, X, z, beta, mean_beta, cov_beta, S)
         self.likelihood = likelihood
         self.omega_samples = np.zeros((self.S, len(self.y)))
 
@@ -245,7 +273,7 @@ class PolyaGamma(Sampler):
 
                 r_log_z = L_prop_z - L_z
 
-                if np.log(uniform()) < min(0, r_log_z):
+                if np.log(np.random.uniform()) < min(0, r_log_z):
                     self.z = z_prop
 
             self.z_samples[i] = self.z

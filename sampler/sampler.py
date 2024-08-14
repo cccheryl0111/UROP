@@ -1,9 +1,7 @@
 import numpy as np
-import scipy.stats as stats
-from scipy.stats import norm, multivariate_normal
+from scipy.stats import uniform, gamma, norm
 from scipy.special import gammaln
 import statsmodels.api as sm
-from numpy.random import uniform
 from polyagamma import random_polyagamma
 
 
@@ -105,7 +103,7 @@ class GibbsSampler(Sampler):
                               - (self.g/(self.g+1)) * Hg_z) @ y_z
             shape = (self.nu0 + len(X_z)) / 2
             scale = (self.nu0 * self.sigma02 + SSRg_z) / 2
-            gamma2 = 1 / stats.gamma.rvs(a=shape, scale=scale, size=1)
+            gamma2 = 1 / gamma.rvs(a=shape, scale=scale, size=1)
 
             # Update beta
             cor = self.g * gamma2 * np.linalg.inv(X_z.T @ X_z)
@@ -147,24 +145,24 @@ class MetropolisHastingsSampler(Sampler):
         self.cov_beta = cov_beta
 
     def run_sampler(self):
-        p_beta = multivariate_normal.pdf(self.beta, self.mean_beta,
-                                         self.cov_beta)
-
         for i in range(self.S):
             # Sample beta one by one
+
+            delta = 40
             for j in range(self.X.shape[1]):
                 beta_prop_arr = self.beta.copy()
-                var_prop = np.var(np.log(self.y[j]+1/2))
-                beta_prop = np.random.normal(self.beta[j], var_prop)
+                beta_prop = np.random.uniform(self.beta[j]-delta,
+                                              self.beta[j]+delta)
                 beta_prop_arr[j] = beta_prop
 
-                p_beta = norm.pdf(self.beta[j], self.mean_beta[j],
-                                  self.cov_beta[j])
-                J_prop_beta = norm.pdf(beta_prop, self.beta[j],
-                                       var_prop)
-                p_prop_beta = norm.pdf(beta_prop, self.mean_beta[j],
-                                       self.cov_beta[j])
-                J_beta = norm.pdf(self.beta[j], beta_prop, var_prop)
+                p_beta = norm.logpdf(self.beta[j], self.mean_beta[j],
+                                     self.cov_beta[j])
+                J_prop_beta = np.log((beta_prop - (self.beta[j]
+                                                   - delta)) / (2*delta))
+                p_prop_beta = norm.logpdf(beta_prop, self.mean_beta[j],
+                                          self.cov_beta[j])
+                J_beta = np.log((self.beta[j] - (beta_prop
+                                                 - delta)) / (2*delta))
                 L_prop_beta = np.log(self.likelihood(
                     sum(beta_prop_arr * self.z * self.X[j]))) ** self.y[j]
                 + np.log(1 - self.likelihood(
@@ -175,37 +173,13 @@ class MetropolisHastingsSampler(Sampler):
                 + np.log(1 - self.likelihood(
                     sum(self.beta * self.z * self.X[j]))) * (1 - self.y[j])
 
-                r_log_beta = L_prop_beta + np.log(p_prop_beta) - L_beta
-                - np.log(p_beta) + np.log(J_beta) - np.log(J_prop_beta)
+                r_log_beta = L_prop_beta + p_prop_beta - L_beta
+                - p_beta + J_beta - J_prop_beta
 
-                if np.log(uniform()) < min(0, r_log_beta):
+                if np.log(np.random.uniform()) < min(0, r_log_beta):
                     self.beta = beta_prop_arr
 
                 self.beta_samples[i] = self.beta
-
-            # Sample z
-            for r in np.random.permutation(range(1, self.X.shape[1])):
-                z_prop = self.z.copy()
-                z_prop[r] = 1 - z_prop[r]
-
-                L_prop_z = sum(np.log(self.likelihood(
-                    np.sum(self.beta * z_prop * self.X, axis=1)) ** self.y
-                    * (np.ones(len(self.y)) - self.likelihood(
-                        np.sum(self.beta * z_prop
-                               * self.X, axis=1))) ** (1 - self.y)))
-
-                L_z = sum(np.log(self.likelihood(
-                    np.sum(self.beta * self.z * self.X, axis=1)) ** self.y
-                    * (np.ones(len(self.y)) - self.likelihood(
-                        np.sum(self.beta * self.z
-                               * self.X, axis=1))) ** (1 - self.y)))
-
-                r_log_gamma = L_prop_z - L_z
-
-                if np.log(uniform()) < min(0, r_log_gamma):
-                    self.z = z_prop
-
-            self.z_samples[i] = self.z
 
         return self.beta_samples, self.z_samples
 

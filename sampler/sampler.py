@@ -58,7 +58,7 @@ class MetropolisHastingsSampler(Sampler):
     """
 
     def prop_logpdf(self, beta, prop, delta):
-        pdf = 1
+        pdf = 0
         for r in range(len(beta)):
             pdf += np.log((beta[r] - (prop[r] - delta)) / (2*delta))
         return pdf
@@ -66,7 +66,7 @@ class MetropolisHastingsSampler(Sampler):
     def run_sampler(self):
         for i in range(self.S):
             # Sample beta one by one
-            delta = 32
+            delta = 1
             for j in range(self.X.shape[1]):
                 beta_prop_arr = self.beta.copy()
                 beta_prop = np.random.uniform(self.beta[j]-delta,
@@ -86,13 +86,14 @@ class MetropolisHastingsSampler(Sampler):
 
                 L_beta = self.likelihood(self.y, self.beta, self.z, self.X)
 
-                r_log_beta = L_prop_beta + p_prop_beta - L_beta
-                - p_beta + J_beta - J_prop_beta
-
-                print(r_log_beta)
+                r_log_beta = (L_prop_beta + p_prop_beta
+                              - L_beta - p_beta) + J_beta - J_prop_beta
+                # print(list([L_prop_beta, p_prop_beta,
+                # L_beta, p_beta, J_beta, J_prop_beta]), r_log_beta)
 
                 if np.log(np.random.uniform()) < r_log_beta:
                     self.beta = beta_prop_arr
+                    # print("1")
 
             self.beta_samples[i] = self.beta
 
@@ -109,6 +110,7 @@ class MetropolisHastingsSampler(Sampler):
 
                 if np.log(np.random.uniform()) < r_log_z:
                     self.z = z_prop
+                    # print("2")
 
             self.z_samples[i] = self.z
 
@@ -168,6 +170,7 @@ class PolyaGamma(Sampler):
 
                 if np.log(np.random.uniform()) < r_log_z:
                     self.z = z_prop
+                    # print(".")
 
             self.z_samples[i] = self.z
 
